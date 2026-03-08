@@ -2,8 +2,8 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import fs from "fs";
 import os from "os";
 import path from "path";
-import { loadState, saveState, getDefaultState, todayString } from "./state.js";
-import type { StateFile } from "./state.js";
+import { loadState, saveState, getDefaultState, todayString, enqueueItem, completeQueueItem, filterQueueItems } from "./state.js";
+import type { StateFile, QueueItem } from "./state.js";
 
 function tmpFile(): string {
   return path.join(os.tmpdir(), `x-mcp-test-${Date.now()}-${Math.random().toString(36).slice(2)}.json`);
@@ -720,5 +720,167 @@ describe("queue", () => {
     }));
     const loaded = loadState(filePath);
     expect(loaded.queue).toEqual([]);
+  });
+
+  it("prunes skipped items older than 1 day", () => {
+    const old = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toISOString();
+    const state = getDefaultState();
+    state.queue = [
+      { id: "q:skipped", type: "cold_reply", status: "skipped", created_at: old, text: "skipped", intent_url: "u", source_tool: "reply_to_tweet" },
+    ];
+    saveState(filePath, state);
+    const loaded = loadState(filePath);
+    expect(loaded.queue).toHaveLength(0);
+  });
+
+  it("rejects items with invalid type enum", () => {
+    fs.writeFileSync(filePath, JSON.stringify({
+      ...getDefaultState(),
+      queue: [
+        { id: "q:bad", type: "invalid_type", status: "pending", created_at: new Date().toISOString(), text: "hi", intent_url: "u", source_tool: "reply_to_tweet" },
+      ],
+    }));
+    const loaded = loadState(filePath);
+    expect(loaded.queue).toHaveLength(0);
+  });
+
+  it("rejects items with invalid status enum", () => {
+    fs.writeFileSync(filePath, JSON.stringify({
+      ...getDefaultState(),
+      queue: [
+        { id: "q:bad", type: "cold_reply", status: "banana", created_at: new Date().toISOString(), text: "hi", intent_url: "u", source_tool: "reply_to_tweet" },
+      ],
+    }));
+    const loaded = loadState(filePath);
+    expect(loaded.queue).toHaveLength(0);
+  });
+});
+
+describe("enqueueItem", () => {
+  function makeItem(overrides?: Partial<QueueItem>): QueueItem {
+    return {
+      id: "q:123", type: "cold_reply", status: "pending",
+      created_at: new Date().toISOString(),
+      text: "test", intent_url: "https://x.com/intent/post?text=test",
+      source_tool: "reply_to_tweet",
+      ...overrides,
+    };
+  }
+
+  it("adds item to empty queue", () => {
+    const state = getDefaultState();
+    const added = enqueueItem(state, makeItem());
+    expect(added).toBe(true);
+    expect(state.queue).toHaveLength(1);
+    expect(state.queue[0].id).toBe("q:123");
+  });
+
+  it("rejects duplicate pending item with same ID", () => {
+    const state = getDefaultState();
+    enqueueItem(state, makeItem());
+    const added = enqueueItem(state, makeItem({ text: "different text" }));
+    expect(added).toBe(false);
+    expect(state.queue).toHaveLength(1);
+  });
+
+  it("allows item with same ID if existing is not pending", () => {
+    const state = getDefaultState();
+    enqueueItem(state, makeItem());
+    state.queue[0].status = "posted";
+    const added = enqueueItem(state, makeItem({ text: "retry" }));
+    expect(added).toBe(true);
+    expect(state.queue).toHaveLength(2);
+  });
+
+  it("allows items with different IDs", () => {
+    const state = getDefaultState();
+    enqueueItem(state, makeItem({ id: "q:111" }));
+    enqueueItem(state, makeItem({ id: "q:222" }));
+    expect(state.queue).toHaveLength(2);
+  });
+});
+
+describe("completeQueueItem", () => {
+  function makeItem(overrides?: Partial<QueueItem>): QueueItem {
+    return {
+      id: "q:123", type: "cold_reply", status: "pending",
+      created_at: new Date().toISOString(),
+      text: "test", intent_url: "https://x.com/intent/post?text=test",
+      source_tool: "reply_to_tweet",
+      ...overrides,
+    };
+  }
+
+  it("marks pending item as posted", () => {
+    const state = getDefaultState();
+    state.queue.push(makeItem());
+    const error = completeQueueItem(state, "q:123", "posted");
+    expect(error).toBeNull();
+    expect(state.queue[0].status).toBe("posted");
+  });
+
+  it("marks pending item as skipped", () => {
+    const state = getDefaultState();
+    state.queue.push(makeItem());
+    const error = completeQueueItem(state, "q:123", "skipped");
+    expect(error).toBeNull();
+    expect(state.queue[0].status).toBe("skipped");
+  });
+
+  it("returns error for non-existent item", () => {
+    const state = getDefaultState();
+    const error = completeQueueItem(state, "q:nonexistent", "posted");
+    expect(error).toContain("not found");
+  });
+
+  it("returns error for already-posted item", () => {
+    const state = getDefaultState();
+    state.queue.push(makeItem({ status: "posted" }));
+    const error = completeQueueItem(state, "q:123", "skipped");
+    expect(error).toContain("not in pending status");
+  });
+
+  it("returns error for already-skipped item", () => {
+    const state = getDefaultState();
+    state.queue.push(makeItem({ status: "skipped" }));
+    const error = completeQueueItem(state, "q:123", "posted");
+    expect(error).toContain("not in pending status");
+  });
+});
+
+describe("filterQueueItems", () => {
+  const items: QueueItem[] = [
+    { id: "q:1", type: "cold_reply", status: "pending", created_at: "", text: "a", intent_url: "u", source_tool: "reply_to_tweet" },
+    { id: "q:2", type: "cold_reply", status: "posted", created_at: "", text: "b", intent_url: "u", source_tool: "reply_to_tweet" },
+    { id: "q:3", type: "mention_post", status: "skipped", created_at: "", text: "c", intent_url: "u", source_tool: "post_tweet" },
+    { id: "q:4", type: "cold_reply", status: "pending", created_at: "", text: "d", intent_url: "u", source_tool: "reply_to_tweet" },
+  ];
+
+  it("filters by pending", () => {
+    const result = filterQueueItems(items, "pending");
+    expect(result).toHaveLength(2);
+    expect(result.map((q) => q.id)).toEqual(["q:1", "q:4"]);
+  });
+
+  it("filters by posted", () => {
+    const result = filterQueueItems(items, "posted");
+    expect(result).toHaveLength(1);
+    expect(result[0].id).toBe("q:2");
+  });
+
+  it("filters by skipped", () => {
+    const result = filterQueueItems(items, "skipped");
+    expect(result).toHaveLength(1);
+    expect(result[0].id).toBe("q:3");
+  });
+
+  it("returns all with 'all'", () => {
+    const result = filterQueueItems(items, "all");
+    expect(result).toHaveLength(4);
+  });
+
+  it("returns empty for non-matching status", () => {
+    const result = filterQueueItems(items, "nonexistent");
+    expect(result).toHaveLength(0);
   });
 });

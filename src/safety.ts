@@ -217,25 +217,28 @@ export function recordAction(
   toolName: string,
   targetTweetId: string | null,
   state: StateFile,
+  options?: { skipBudget?: boolean },
 ): void {
   const action = ACTION_MAP[toolName] ?? null;
   const now = new Date().toISOString();
 
-  // Increment budget counter
-  if (action === "reply") state.budget.replies++;
-  else if (action === "original") state.budget.originals++;
-  else if (action === "like") state.budget.likes++;
-  else if (action === "retweet") state.budget.retweets++;
-  else if (action === "follow") state.budget.follows++;
-  else if (action === "unfollow") state.budget.unfollows++;
-  else if (action === "delete") state.budget.deletes++;
+  if (!options?.skipBudget) {
+    // Increment budget counter
+    if (action === "reply") state.budget.replies++;
+    else if (action === "original") state.budget.originals++;
+    else if (action === "like") state.budget.likes++;
+    else if (action === "retweet") state.budget.retweets++;
+    else if (action === "follow") state.budget.follows++;
+    else if (action === "unfollow") state.budget.unfollows++;
+    else if (action === "delete") state.budget.deletes++;
 
-  // Update last_write_at for any write action
-  if (action) {
-    state.last_write_at = now;
+    // Update last_write_at for any write action
+    if (action) {
+      state.last_write_at = now;
+    }
   }
 
-  // Add to dedup set
+  // Add to dedup set (always — even for queued items)
   const dedupType = DEDUP_MAP[toolName] ?? null;
   if (dedupType && targetTweetId) {
     state.engaged[dedupType].push({ tweet_id: targetTweetId, at: now });

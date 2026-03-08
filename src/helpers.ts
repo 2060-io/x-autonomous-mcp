@@ -36,6 +36,17 @@ export function buildIntentUrl(params: { text: string; in_reply_to?: string }): 
 }
 
 /**
+ * Detect @mentions in tweet text. Returns matched mentions or null if none found.
+ * Avoids false positives on email addresses (user@domain.com) by requiring
+ * a non-word character or start-of-string before the @.
+ */
+export function detectMentions(text: string): string[] | null {
+  const matches = text.match(/(^|[^\w])@\w{1,15}/g);
+  if (!matches || matches.length === 0) return null;
+  return matches.map((m) => m.replace(/^[^\w@]+/, ""));
+}
+
+/**
  * Safely extract a message string from an unknown error value.
  */
 export function errorMessage(e: unknown): string {

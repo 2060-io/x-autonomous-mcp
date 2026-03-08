@@ -366,6 +366,31 @@ describe("recordAction", () => {
     expect(state.engaged.replied_to).toHaveLength(2);
     expect(state.engaged.liked).toHaveLength(1);
   });
+
+  it("records dedup but skips budget when skipBudget is true", () => {
+    const state = makeState();
+    recordAction("reply_to_tweet", "queued123", state, { skipBudget: true });
+    expect(state.budget.replies).toBe(0);
+    expect(state.last_write_at).toBeNull();
+    expect(state.engaged.replied_to).toHaveLength(1);
+    expect(state.engaged.replied_to[0].tweet_id).toBe("queued123");
+  });
+
+  it("skipBudget does not affect dedup for like_tweet", () => {
+    const state = makeState();
+    recordAction("like_tweet", "liked456", state, { skipBudget: true });
+    expect(state.budget.likes).toBe(0);
+    expect(state.engaged.liked).toHaveLength(1);
+    expect(state.engaged.liked[0].tweet_id).toBe("liked456");
+  });
+
+  it("normal call still increments budget when skipBudget is not set", () => {
+    const state = makeState();
+    recordAction("reply_to_tweet", "normal789", state);
+    expect(state.budget.replies).toBe(1);
+    expect(state.last_write_at).not.toBeNull();
+    expect(state.engaged.replied_to).toHaveLength(1);
+  });
 });
 
 describe("getParameterHint", () => {

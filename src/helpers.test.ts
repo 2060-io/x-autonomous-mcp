@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { parseTweetId, errorMessage, formatResult, isColdReplyBlocked, buildIntentUrl } from "./helpers.js";
+import { parseTweetId, errorMessage, formatResult, isColdReplyBlocked, buildIntentUrl, detectMentions } from "./helpers.js";
 
 describe("parseTweetId", () => {
   it("parses raw numeric ID", () => {
@@ -192,6 +192,57 @@ describe("isColdReplyBlocked", () => {
   it("rejects unrelated errors", () => {
     const err = new Error("postTweet failed (HTTP 429): Rate limited.");
     expect(isColdReplyBlocked(err)).toBe(false);
+  });
+});
+
+describe("detectMentions", () => {
+  it("detects @mention at start of text", () => {
+    expect(detectMentions("@user hello")).toEqual(["@user"]);
+  });
+
+  it("detects @mention in middle of text", () => {
+    expect(detectMentions("hello @user world")).toEqual(["@user"]);
+  });
+
+  it("detects multiple mentions", () => {
+    expect(detectMentions("cc @alice @bob")).toEqual(["@alice", "@bob"]);
+  });
+
+  it("rejects email addresses", () => {
+    expect(detectMentions("contact me@example.com")).toBeNull();
+  });
+
+  it("rejects email with underscore", () => {
+    expect(detectMentions("user_name@domain.com")).toBeNull();
+  });
+
+  it("detects mention after punctuation", () => {
+    expect(detectMentions("(@user)")).toEqual(["@user"]);
+  });
+
+  it("detects mention after period", () => {
+    expect(detectMentions(".@user")).toEqual(["@user"]);
+  });
+
+  it("returns null for text without mentions", () => {
+    expect(detectMentions("just plain text")).toBeNull();
+  });
+
+  it("returns null for empty string", () => {
+    expect(detectMentions("")).toBeNull();
+  });
+
+  it("handles mention after newline", () => {
+    expect(detectMentions("first line\n@user second line")).toEqual(["@user"]);
+  });
+
+  it("limits username to 15 characters", () => {
+    const result = detectMentions("@abcdefghijklmno is valid");
+    expect(result).toEqual(["@abcdefghijklmno"]);
+  });
+
+  it("does not match bare @ sign", () => {
+    expect(detectMentions("email me @")).toBeNull();
   });
 });
 

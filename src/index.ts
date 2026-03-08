@@ -7,9 +7,9 @@ import path from "path";
 import { fileURLToPath } from "url";
 import { z } from "zod";
 import { XApiClient } from "./x-api.js";
-import { parseTweetId, errorMessage, formatResult, isColdReplyBlocked, buildIntentUrl } from "./helpers.js";
+import { parseTweetId, errorMessage, formatResult, isColdReplyBlocked, buildIntentUrl, detectMentions } from "./helpers.js";
 import { encode } from "./toon.js";
-import { loadState, saveState, type StateFile, type QueueItem } from "./state.js";
+import { loadState, saveState, enqueueItem, completeQueueItem as completeQueueItemInState, filterQueueItems, type StateFile, type QueueItem } from "./state.js";
 import {
   loadBudgetConfig,
   formatBudgetString,
@@ -191,8 +191,11 @@ function wrapHandler(
       // Execute the actual API call, passing resolved ID and state
       const { result, rateLimit } = await handler(args, targetId, state);
 
-      // Record action for write tools
-      if (isWriteTool(toolName)) {
+      // Queued items manage their own dedup via recordAction(skipBudget) — skip wrapHandler's recordAction
+      const isQueued = result && typeof result === "object" && (result as Record<string, unknown>).queued === true;
+
+      // Record action for write tools (skip for queued — handler already recorded dedup)
+      if (isWriteTool(toolName) && !isQueued) {
         recordAction(toolName, targetId ?? null, state);
       }
 
@@ -201,8 +204,8 @@ function wrapHandler(
         opts.postProcess(result, state);
       }
 
-      // Save state if anything mutated it
-      if (isWriteTool(toolName) || opts?.postProcess) {
+      // Save state if anything mutated it (queued items mutate state.queue)
+      if (isWriteTool(toolName) || opts?.postProcess || isQueued) {
         saveState(statePath, state);
       }
 
@@ -249,8 +252,8 @@ server.registerTool(
     const text = args.text as string;
 
     // Detect @mentions — X blocks these in standalone posts
-    const mentionMatches = text.match(/@\w{1,15}/g);
-    if (mentionMatches && mentionMatches.length > 0) {
+    const mentions = detectMentions(text);
+    if (mentions) {
       const intentUrl = buildIntentUrl({ text });
       const itemId = `q:post-${Date.now()}`;
       const item: QueueItem = {
@@ -258,8 +261,8 @@ server.registerTool(
         created_at: new Date().toISOString(),
         text, intent_url: intentUrl, source_tool: "post_tweet",
       };
-      state.queue.push(item);
-      return { result: { queued: true, queue_id: itemId, intent_url: intentUrl, message: `Post with mentions queued for manual posting. Mentions: ${mentionMatches.join(", ")}` }, rateLimit: "" };
+      enqueueItem(state, item);
+      return { result: { queued: true, queue_id: itemId, intent_url: intentUrl, message: `Post with mentions queued for manual posting. Mentions: ${mentions.join(", ")}` }, rateLimit: "" };
     }
 
     return client.postTweet({
@@ -310,38 +313,24 @@ server.registerTool(
       try {
         return await client.postTweet({ text, reply_to: tweetId, media_ids: mediaIds });
       } catch (err) {
-        if (isColdReplyBlocked(err)) {
-          // Stale cache — queue for manual posting
-          const intentUrl = buildIntentUrl({ text, in_reply_to: tweetId });
-          const item: QueueItem = {
-            id: `q:${tweetId}`, type: "cold_reply", status: "pending",
-            created_at: new Date().toISOString(),
-            target_tweet_id: tweetId, target_author: authorUsername,
-            target_text_snippet: targetTextSnippet,
-            text, intent_url: intentUrl, source_tool: "reply_to_tweet",
-          };
-          if (!state.queue.some((q) => q.id === item.id && q.status === "pending")) {
-            state.queue.push(item);
-          }
-          return { result: { queued: true, queue_id: item.id, intent_url: intentUrl, message: "Cold reply queued for manual posting." }, rateLimit: "" };
-        }
-        throw err;
+        if (!isColdReplyBlocked(err)) throw err;
+        // Stale cache — fall through to queue
       }
-    } else {
-      // Author hasn't mentioned us — queue for manual posting
-      const intentUrl = buildIntentUrl({ text, in_reply_to: tweetId });
-      const item: QueueItem = {
-        id: `q:${tweetId}`, type: "cold_reply", status: "pending",
-        created_at: new Date().toISOString(),
-        target_tweet_id: tweetId, target_author: authorUsername,
-        target_text_snippet: targetTextSnippet,
-        text, intent_url: intentUrl, source_tool: "reply_to_tweet",
-      };
-      if (!state.queue.some((q) => q.id === item.id && q.status === "pending")) {
-        state.queue.push(item);
-      }
-      return { result: { queued: true, queue_id: item.id, intent_url: intentUrl, message: "Cold reply queued for manual posting." }, rateLimit: "" };
     }
+
+    // Queue for manual posting (cold reply or stale mentioned_by cache)
+    const intentUrl = buildIntentUrl({ text, in_reply_to: tweetId });
+    const item: QueueItem = {
+      id: `q:${tweetId}`, type: "cold_reply", status: "pending",
+      created_at: new Date().toISOString(),
+      target_tweet_id: tweetId, target_author: authorUsername,
+      target_text_snippet: targetTextSnippet,
+      text, intent_url: intentUrl, source_tool: "reply_to_tweet",
+    };
+    enqueueItem(state, item);
+    // Record dedup without consuming budget (human may skip this item)
+    recordAction("reply_to_tweet", tweetId, state, { skipBudget: true });
+    return { result: { queued: true, queue_id: item.id, intent_url: intentUrl, message: "Cold reply queued for manual posting." }, rateLimit: "" };
   }, { getTargetTweetId: (args) => parseTweetId(args.tweet_id as string) }),
 );
 
@@ -1054,9 +1043,7 @@ server.registerTool(
     try {
       const state = loadState(statePath);
       const filterStatus = (args.status as string) ?? "pending";
-      const items = filterStatus === "all"
-        ? state.queue
-        : state.queue.filter((q) => q.status === filterStatus);
+      const items = filterQueueItems(state.queue, filterStatus);
 
       const budgetString = formatBudgetString(state, budgetConfig);
       return {
@@ -1086,16 +1073,15 @@ server.registerTool(
       const queueId = args.queue_id as string;
       const action = args.action as "posted" | "skipped";
 
-      const item = state.queue.find((q) => q.id === queueId);
-      if (!item) {
+      const error = completeQueueItemInState(state, queueId, action);
+      if (error) {
         const budgetString = formatBudgetString(state, budgetConfig);
         return {
-          content: [{ type: "text" as const, text: `Error: Queue item '${queueId}' not found.\n\nCurrent x_budget: ${budgetString}` }],
+          content: [{ type: "text" as const, text: `Error: ${error}\n\nCurrent x_budget: ${budgetString}` }],
           isError: true,
         };
       }
 
-      item.status = action;
       saveState(statePath, state);
 
       const budgetString = formatBudgetString(state, budgetConfig);

@@ -169,8 +169,8 @@ function isQueueItem(obj: unknown): obj is QueueItem {
   const q = obj as Record<string, unknown>;
   return (
     typeof q.id === "string" &&
-    typeof q.type === "string" &&
-    typeof q.status === "string" &&
+    (q.type === "cold_reply" || q.type === "mention_post") &&
+    (q.status === "pending" || q.status === "posted" || q.status === "skipped") &&
     typeof q.created_at === "string" &&
     typeof q.text === "string" &&
     typeof q.intent_url === "string" &&
@@ -259,6 +259,29 @@ export function loadState(filePath: string): StateFile {
     console.error(`Warning: could not parse state file ${filePath}, starting fresh:`, e);
     return getDefaultState();
   }
+}
+
+/** Push a queue item if no pending item with the same ID exists. Returns true if added. */
+export function enqueueItem(state: StateFile, item: QueueItem): boolean {
+  if (state.queue.some((q) => q.id === item.id && q.status === "pending")) {
+    return false;
+  }
+  state.queue.push(item);
+  return true;
+}
+
+/** Mark a pending queue item as posted or skipped. Returns error string or null on success. */
+export function completeQueueItem(state: StateFile, queueId: string, action: "posted" | "skipped"): string | null {
+  const item = state.queue.find((q) => q.id === queueId && q.status === "pending");
+  if (!item) return `Queue item '${queueId}' not found or not in pending status.`;
+  item.status = action;
+  return null;
+}
+
+/** Filter queue items by status. "all" returns everything. */
+export function filterQueueItems(queue: QueueItem[], status: string): QueueItem[] {
+  if (status === "all") return queue;
+  return queue.filter((q) => q.status === status);
 }
 
 export function saveState(filePath: string, state: StateFile): void {

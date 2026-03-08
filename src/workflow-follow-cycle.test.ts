@@ -130,10 +130,10 @@ describe("processWorkflows — follow_cycle", () => {
     expect(result.auto_completed[0]).toContain("budget exhausted");
   });
 
-  it("queues reply when author not in mentioned_by", async () => {
+  it("queues reply when author not in mentioned_by (no budget consumed)", async () => {
     const workflow = makeWorkflow({
       current_step: "post_reply",
-      context: { reply_text: "Great insight!", target_tweet_id: "tweet1" },
+      context: { reply_text: "Great insight!", target_tweet_id: "tweet1", target_tweet_text: "This is the original tweet text that should appear as a snippet" },
     });
     const state = makeState({ workflows: [workflow] });
     const client = makeMockClient();
@@ -147,18 +147,24 @@ describe("processWorkflows — follow_cycle", () => {
     expect(workflow.check_after).not.toBeNull();
     expect(workflow.actions_done).toContain("reply_queued");
 
-    // Verify budget counter incremented and queue item added
-    expect(state.budget.replies).toBe(1);
+    // Budget NOT consumed for queued items (human may skip)
+    expect(state.budget.replies).toBe(0);
+    // But dedup IS recorded
+    expect(state.engaged.replied_to).toHaveLength(1);
+    expect(state.engaged.replied_to[0].tweet_id).toBe("tweet1");
+
+    // Queue item added with context
     expect(state.queue.length).toBe(1);
     expect(state.queue[0].id).toBe("q:tweet1");
     expect(state.queue[0].type).toBe("cold_reply");
     expect(state.queue[0].status).toBe("pending");
     expect(state.queue[0].text).toBe("Great insight!");
+    expect(state.queue[0].target_text_snippet).toBe("This is the original tweet text that should appear as a snippet");
     expect(state.queue[0].intent_url).toContain("x.com/intent/post");
     expect(state.queue[0].intent_url).toContain("in_reply_to=tweet1");
   });
 
-  it("posts direct reply when author is in mentioned_by", async () => {
+  it("posts direct reply when author is in mentioned_by (budget consumed)", async () => {
     const workflow = makeWorkflow({
       current_step: "post_reply",
       context: { reply_text: "Great insight!", target_tweet_id: "tweet1" },
@@ -176,10 +182,13 @@ describe("processWorkflows — follow_cycle", () => {
     expect(workflow.current_step).toBe("waiting");
     expect(workflow.context.reply_tweet_id).toBe("reply789");
     expect(workflow.actions_done).toContain("replied");
+    // Budget IS consumed for direct replies
     expect(state.budget.replies).toBe(1);
+    // No queue items
+    expect(state.queue.length).toBe(0);
   });
 
-  it("queues reply when getTweet fails", async () => {
+  it("queues reply when getTweet fails (no budget consumed)", async () => {
     const workflow = makeWorkflow({
       current_step: "post_reply",
       context: { reply_text: "Great insight!", target_tweet_id: "tweet1" },
@@ -194,12 +203,13 @@ describe("processWorkflows — follow_cycle", () => {
     // getTweet failed → authorId undefined → canReply false → queued
     expect(client.postTweet).not.toHaveBeenCalled();
     expect(workflow.actions_done).toContain("reply_queued");
-    expect(state.budget.replies).toBe(1);
+    expect(state.budget.replies).toBe(0);
+    expect(state.engaged.replied_to).toHaveLength(1);
     expect(state.queue.length).toBe(1);
     expect(state.queue[0].type).toBe("cold_reply");
   });
 
-  it("queues reply when getTweet returns no author_id", async () => {
+  it("queues reply when getTweet returns no author_id (no budget consumed)", async () => {
     const workflow = makeWorkflow({
       current_step: "post_reply",
       context: { reply_text: "Great insight!", target_tweet_id: "tweet1" },
@@ -214,10 +224,12 @@ describe("processWorkflows — follow_cycle", () => {
     // author_id missing → canReply false → queued
     expect(client.postTweet).not.toHaveBeenCalled();
     expect(workflow.actions_done).toContain("reply_queued");
+    expect(state.budget.replies).toBe(0);
+    expect(state.engaged.replied_to).toHaveLength(1);
     expect(state.queue.length).toBe(1);
   });
 
-  it("queues reply on 403 even when author is in mentioned_by (stale cache)", async () => {
+  it("queues reply on 403 even when author is in mentioned_by (stale cache, no budget consumed)", async () => {
     const workflow = makeWorkflow({
       current_step: "post_reply",
       context: { reply_text: "Great insight!", target_tweet_id: "tweet1" },
@@ -234,6 +246,9 @@ describe("processWorkflows — follow_cycle", () => {
     expect(client.postTweet).toHaveBeenCalledTimes(1);
     expect(client.postTweet).toHaveBeenCalledWith({ text: "Great insight!", reply_to: "tweet1" });
     expect(workflow.actions_done).toContain("reply_queued");
+    // Budget NOT consumed for queued items
+    expect(state.budget.replies).toBe(0);
+    expect(state.engaged.replied_to).toHaveLength(1);
     expect(state.queue.length).toBe(1);
     expect(state.queue[0].intent_url).toContain("in_reply_to=tweet1");
   });

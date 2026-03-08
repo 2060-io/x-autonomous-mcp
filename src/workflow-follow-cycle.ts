@@ -1,5 +1,6 @@
 import type { Workflow, XApiClient, StateFile, BudgetConfig, LlmTask, AdvanceResult } from "./workflow-types.js";
 import type { QueueItem } from "./state.js";
+import { enqueueItem } from "./state.js";
 import type { ProtectedAccount } from "./safety.js";
 import { checkBudget, recordAction, checkDedup, isProtectedAccount } from "./safety.js";
 import { isColdReplyBlocked, buildIntentUrl } from "./helpers.js";
@@ -133,7 +134,6 @@ export async function advanceFollowCycle(
     }
 
     try {
-      // Check if reply is possible (author must have @mentioned us)
       let authorId: string | undefined;
       try {
         const { result: tweetData } = await client.getTweet(targetTweetId);
@@ -145,48 +145,33 @@ export async function advanceFollowCycle(
       const canReply = authorId ? state.mentioned_by.includes(authorId) : false;
 
       if (canReply) {
-        // Author has mentioned us — try direct reply
         try {
           const { result } = await client.postTweet({ text: replyText, reply_to: targetTweetId });
           const data = result as { data?: { id?: string } };
           if (data.data?.id) workflow.context.reply_tweet_id = data.data.id;
           workflow.actions_done.push("replied");
+          recordAction("reply_to_tweet", targetTweetId, state);
         } catch (err) {
-          if (isColdReplyBlocked(err)) {
-            // Stale cache — queue for manual posting
-            const intentUrl = buildIntentUrl({ text: replyText, in_reply_to: targetTweetId });
-            const item: QueueItem = {
-              id: `q:${targetTweetId}`, type: "cold_reply", status: "pending",
-              created_at: new Date().toISOString(),
-              target_tweet_id: targetTweetId, target_author: `@${workflow.target_username}`,
-              text: replyText, intent_url: intentUrl,
-              source_tool: "reply_to_tweet", source_workflow_id: workflow.id,
-            };
-            if (!state.queue.some((q) => q.id === item.id && q.status === "pending")) {
-              state.queue.push(item);
-            }
-            workflow.actions_done.push("reply_queued");
-          } else {
-            throw err;
-          }
+          if (!isColdReplyBlocked(err)) throw err;
+          // Stale cache — fall through to queue
         }
-      } else {
-        // Author hasn't mentioned us — queue for manual posting
+      }
+
+      // Queue if not posted directly (cold reply or stale cache)
+      if (!workflow.actions_done.includes("replied")) {
         const intentUrl = buildIntentUrl({ text: replyText, in_reply_to: targetTweetId });
         const item: QueueItem = {
           id: `q:${targetTweetId}`, type: "cold_reply", status: "pending",
           created_at: new Date().toISOString(),
           target_tweet_id: targetTweetId, target_author: `@${workflow.target_username}`,
+          target_text_snippet: workflow.context.target_tweet_text?.slice(0, 100),
           text: replyText, intent_url: intentUrl,
           source_tool: "reply_to_tweet", source_workflow_id: workflow.id,
         };
-        if (!state.queue.some((q) => q.id === item.id && q.status === "pending")) {
-          state.queue.push(item);
-        }
+        enqueueItem(state, item);
+        recordAction("reply_to_tweet", targetTweetId, state, { skipBudget: true });
         workflow.actions_done.push("reply_queued");
       }
-
-      recordAction("reply_to_tweet", targetTweetId, state);
     } catch {
       // Reply failure — continue to waiting state anyway
       workflow.actions_done.push("reply_failed");

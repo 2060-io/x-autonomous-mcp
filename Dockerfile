@@ -24,6 +24,6 @@ EXPOSE 8000
 CMD ["supergateway", \
      "--stdio", "node dist/index.js", \
      "--port", "8000", \
-     "--transport", "streamableHttp", \
+     "--outputTransport", "streamableHttp", \
      "--healthEndpoint", "/healthz", \
      "--cors"]

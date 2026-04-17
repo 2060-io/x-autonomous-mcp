@@ -13,17 +13,16 @@ FROM node:22-alpine
 
 WORKDIR /app
 
-RUN npm install -g supergateway
-
 COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/dist ./dist
 COPY --from=builder /app/package.json ./
 
+ENV MCP_TRANSPORT=http \
+    MCP_PORT=8000 \
+    MCP_PATH=/mcp \
+    MCP_HEALTH_PATH=/healthz \
+    MCP_BODY_LIMIT=50mb
+
 EXPOSE 8000
 
-CMD ["supergateway", \
-     "--stdio", "node dist/index.js", \
-     "--port", "8000", \
-     "--outputTransport", "streamableHttp", \
-     "--healthEndpoint", "/healthz", \
-     "--cors"]
+CMD ["node", "dist/index.js"]

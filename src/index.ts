@@ -2,6 +2,8 @@
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
+import express from "express";
 import dotenv from "dotenv";
 import path from "path";
 import { fileURLToPath } from "url";
@@ -1161,10 +1163,75 @@ server.registerTool(
 // START SERVER
 // ============================================================
 
-async function main() {
-  await resolveProtectedAccountIds();
+async function startStdio(): Promise<void> {
   const transport = new StdioServerTransport();
   await server.connect(transport);
+}
+
+async function startHttp(): Promise<void> {
+  const port = Number(process.env.MCP_PORT ?? process.env.PORT ?? "8000");
+  const mcpPath = process.env.MCP_PATH ?? "/mcp";
+  const healthPath = process.env.MCP_HEALTH_PATH ?? "/healthz";
+  // express.json default body limit is 100 KB — far too small for base64-encoded
+  // media uploads. Allow up to 50 MB (matches X's media size limits) so tools like
+  // upload_media can accept typical images and videos over the streamable HTTP transport.
+  const bodyLimit = process.env.MCP_BODY_LIMIT ?? "50mb";
+
+  // Stateless streamable HTTP: one transport handles all concurrent requests;
+  // no session tracking needed for our single-tenant pod deployment.
+  const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
+  await server.connect(transport);
+
+  const app = express();
+  app.use(express.json({ limit: bodyLimit }));
+  app.get(healthPath, (_req, res) => {
+    res.status(200).send("ok");
+  });
+  app.all(mcpPath, async (req, res) => {
+    try {
+      await transport.handleRequest(req, res, req.body);
+    } catch (err) {
+      console.error("[x-mcp] handleRequest error:", err);
+      if (!res.headersSent) {
+        res.status(500).json({
+          jsonrpc: "2.0",
+          error: { code: -32603, message: "Internal server error" },
+          id: null,
+        });
+      }
+    }
+  });
+
+  await new Promise<void>((resolve) => {
+    app.listen(port, () => {
+      console.error(
+        `[x-mcp] StreamableHTTP transport listening on :${port}${mcpPath} (body limit: ${bodyLimit}, health: ${healthPath})`,
+      );
+      resolve();
+    });
+  });
+
+  const shutdown = async (signal: string) => {
+    console.error(`[x-mcp] Received ${signal}, shutting down`);
+    try {
+      await transport.close();
+      await server.close();
+    } finally {
+      process.exit(0);
+    }
+  };
+  process.on("SIGINT", () => void shutdown("SIGINT"));
+  process.on("SIGTERM", () => void shutdown("SIGTERM"));
+}
+
+async function main(): Promise<void> {
+  await resolveProtectedAccountIds();
+  const transportKind = (process.env.MCP_TRANSPORT ?? "stdio").toLowerCase();
+  if (transportKind === "http" || transportKind === "streamablehttp") {
+    await startHttp();
+  } else {
+    await startStdio();
+  }
 }
 
 main().catch((error) => {

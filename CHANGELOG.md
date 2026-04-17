@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.7](https://github.com/2060-io/x-autonomous-mcp/compare/v0.1.6...v0.1.7) (2026-04-17)
+
+
+### Features
+
+* **transport:** speak streamable HTTP natively, drop supergateway ([#12](https://github.com/2060-io/x-autonomous-mcp/issues/12)) ([927f6dd](https://github.com/2060-io/x-autonomous-mcp/commit/927f6dddae3cb684038e6ddb35fa3a88e75d6fa5))
+
 ## [0.1.6](https://github.com/2060-io/x-autonomous-mcp/compare/v0.1.5...v0.1.6) (2026-04-17)
 
 

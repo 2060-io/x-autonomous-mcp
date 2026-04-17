@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.6](https://github.com/2060-io/x-autonomous-mcp/compare/v0.1.5...v0.1.6) (2026-04-17)
+
+
+### Bug Fixes
+
+* readme ([0ffbb27](https://github.com/2060-io/x-autonomous-mcp/commit/0ffbb277b6eee39774e354905aff517cd22fa3ce))
+* readme ([a2b4aa6](https://github.com/2060-io/x-autonomous-mcp/commit/a2b4aa610b9738b499eebfcf606a72d57d6d3d0f))
+
 ## [0.1.5](https://github.com/2060-io/x-autonomous-mcp/compare/v0.1.4...v0.1.5) (2026-04-17)
 
 

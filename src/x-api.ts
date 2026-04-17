@@ -2,7 +2,9 @@ import crypto from "crypto";
 import OAuth from "oauth-1.0a";
 
 const DEFAULT_API_BASE = "https://api.x.com/2";
-const UPLOAD_BASE = "https://upload.twitter.com/1.1";
+// Media upload moved from the deprecated v1.1 subdomain (upload.twitter.com)
+// to the unified v2 endpoint. See: https://docs.x.com/x-api/media/quickstart
+const UPLOAD_PATH = "/media/upload";
 
 interface RateLimitInfo {
   limit: number;
@@ -481,10 +483,11 @@ export class XApiClient {
       total_bytes: totalBytes.toString(),
       media_category: mediaCategory,
     });
-    const initRes = await fetch(`${UPLOAD_BASE}/media/upload.json`, {
+    const uploadUrl = `${this.apiBase}${UPLOAD_PATH}`;
+    const initRes = await fetch(uploadUrl, {
       method: "POST",
       headers: {
-        ...this.getOAuthHeaders(`${UPLOAD_BASE}/media/upload.json`, "POST"),
+        ...this.getOAuthHeaders(uploadUrl, "POST"),
         "Content-Type": "application/x-www-form-urlencoded",
       },
       body: initForm.toString(),
@@ -505,9 +508,9 @@ export class XApiClient {
       formData.append("segment_index", i.toString());
       formData.append("media_data", chunk.toString("base64"));
 
-      const appendRes = await fetch(`${UPLOAD_BASE}/media/upload.json`, {
+      const appendRes = await fetch(uploadUrl, {
         method: "POST",
-        headers: this.getOAuthHeaders(`${UPLOAD_BASE}/media/upload.json`, "POST"),
+        headers: this.getOAuthHeaders(uploadUrl, "POST"),
         body: formData,
       });
 
@@ -522,10 +525,10 @@ export class XApiClient {
       command: "FINALIZE",
       media_id: mediaId,
     });
-    const finalizeRes = await fetch(`${UPLOAD_BASE}/media/upload.json`, {
+    const finalizeRes = await fetch(uploadUrl, {
       method: "POST",
       headers: {
-        ...this.getOAuthHeaders(`${UPLOAD_BASE}/media/upload.json`, "POST"),
+        ...this.getOAuthHeaders(uploadUrl, "POST"),
         "Content-Type": "application/x-www-form-urlencoded",
       },
       body: finalizeForm.toString(),

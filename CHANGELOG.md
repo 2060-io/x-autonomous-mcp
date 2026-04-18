@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.8](https://github.com/2060-io/x-autonomous-mcp/compare/v0.1.7...v0.1.8) (2026-04-18)
+
+
+### Bug Fixes
+
+* **transport:** use per-session MCP server+transport for streamable HTTP ([#14](https://github.com/2060-io/x-autonomous-mcp/issues/14)) ([58e175d](https://github.com/2060-io/x-autonomous-mcp/commit/58e175db6482508df789d467c9d4fad8d7169dfc))
+
 ## [0.1.7](https://github.com/2060-io/x-autonomous-mcp/compare/v0.1.6...v0.1.7) (2026-04-17)
 
 

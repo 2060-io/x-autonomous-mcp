@@ -3,6 +3,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
+import { randomUUID } from "node:crypto";
 import express from "express";
 import dotenv from "dotenv";
 import path from "path";
@@ -84,12 +85,16 @@ async function resolveProtectedAccountIds(): Promise<void> {
   }
 }
 
-// --- MCP server ---
-
-const server = new McpServer({
-  name: "x-autonomous-mcp",
-  version: "0.1.0",
-});
+// --- MCP server factory ---
+// Each caller (stdio process, per-session HTTP transport) gets its own McpServer.
+// All tools share the same module-level X API client, state, budget config,
+// and workflow helpers via closure — so per-session overhead is just object
+// construction and handler registration (sub-millisecond).
+function buildServer(): McpServer {
+  const server = new McpServer({
+    name: "x-autonomous-mcp",
+    version: "0.1.0",
+  });
 
 // --- Valid parameter keys per tool (for Levenshtein suggestions) ---
 
@@ -1159,11 +1164,15 @@ server.registerTool(
   },
 );
 
+  return server;
+}
+
 // ============================================================
 // START SERVER
 // ============================================================
 
 async function startStdio(): Promise<void> {
+  const server = buildServer();
   const transport = new StdioServerTransport();
   await server.connect(transport);
 }
@@ -1177,19 +1186,57 @@ async function startHttp(): Promise<void> {
   // upload_media can accept typical images and videos over the streamable HTTP transport.
   const bodyLimit = process.env.MCP_BODY_LIMIT ?? "50mb";
 
-  // Stateless streamable HTTP: one transport handles all concurrent requests;
-  // no session tracking needed for our single-tenant pod deployment.
-  const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
-  await server.connect(transport);
+  // Session-managed streamable HTTP (MCP SDK standard pattern).
+  //
+  // The MCP streamable HTTP transport can't be reused across independent
+  // sessions: stateless mode explicitly throws "Stateless transport cannot be
+  // reused across requests", and a single stateful transport rejects a second
+  // initialize with "Invalid Request: Server already initialized". So each
+  // client session gets its own transport+server pair, keyed by the session ID
+  // the SDK assigns on the initialize response. Subsequent requests look it up
+  // via the Mcp-Session-Id header. Sessions are torn down on transport close.
+  type Session = { server: McpServer; transport: StreamableHTTPServerTransport };
+  const sessions = new Map<string, Session>();
 
   const app = express();
   app.use(express.json({ limit: bodyLimit }));
   app.get(healthPath, (_req, res) => {
     res.status(200).send("ok");
   });
+
   app.all(mcpPath, async (req, res) => {
     try {
-      await transport.handleRequest(req, res, req.body);
+      const sessionId = req.headers["mcp-session-id"] as string | undefined;
+      let session = sessionId ? sessions.get(sessionId) : undefined;
+
+      if (!session) {
+        // No session yet — only initialize requests are allowed to create one.
+        const body = req.body as { method?: string } | undefined;
+        const isInitialize = req.method === "POST" && body?.method === "initialize";
+        if (!isInitialize) {
+          res.status(400).json({
+            jsonrpc: "2.0",
+            error: { code: -32000, message: "Bad Request: no session. Send an initialize request first." },
+            id: null,
+          });
+          return;
+        }
+
+        const mcpServer = buildServer();
+        const transport = new StreamableHTTPServerTransport({
+          sessionIdGenerator: () => randomUUID(),
+          onsessioninitialized: (sid) => {
+            sessions.set(sid, { server: mcpServer, transport });
+          },
+        });
+        transport.onclose = () => {
+          if (transport.sessionId) sessions.delete(transport.sessionId);
+        };
+        await mcpServer.connect(transport);
+        session = { server: mcpServer, transport };
+      }
+
+      await session.transport.handleRequest(req, res, req.body);
     } catch (err) {
       console.error("[x-mcp] handleRequest error:", err);
       if (!res.headersSent) {
@@ -1212,10 +1259,13 @@ async function startHttp(): Promise<void> {
   });
 
   const shutdown = async (signal: string) => {
-    console.error(`[x-mcp] Received ${signal}, shutting down`);
+    console.error(`[x-mcp] Received ${signal}, shutting down ${sessions.size} session(s)`);
     try {
-      await transport.close();
-      await server.close();
+      for (const [, { transport, server }] of sessions) {
+        try { await transport.close(); } catch { /* ignore */ }
+        try { await server.close(); } catch { /* ignore */ }
+      }
+      sessions.clear();
     } finally {
       process.exit(0);
     }

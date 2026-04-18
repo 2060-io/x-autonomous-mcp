@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.9](https://github.com/2060-io/x-autonomous-mcp/compare/v0.1.8...v0.1.9) (2026-04-18)
+
+
+### Bug Fixes
+
+* **upload:** use X API v2 simple media upload endpoint ([#16](https://github.com/2060-io/x-autonomous-mcp/issues/16)) ([659e1d7](https://github.com/2060-io/x-autonomous-mcp/commit/659e1d753420a2731356d4bfe66a2ffe377e2f77))
+
 ## [0.1.8](https://github.com/2060-io/x-autonomous-mcp/compare/v0.1.7...v0.1.8) (2026-04-18)
 
 

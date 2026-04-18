@@ -473,69 +473,38 @@ export class XApiClient {
     mimeType: string,
     mediaCategory: string = "tweet_image",
   ) {
+    // X API v2 simple upload (https://docs.x.com/x-api/media/media-upload):
+    // POST /2/media/upload with multipart/form-data containing `media` (binary)
+    // and `media_category`. Handles anything under 5 MB in one round-trip —
+    // covers every DALL-E / image-gen output we produce. OAuth 1.0a signature
+    // covers {url, method}; multipart body fields are excluded from the
+    // signature base string per RFC 5849 §3.4.1.3.1. Leaving Content-Type off
+    // lets fetch() set the multipart boundary automatically.
+    //
+    // The chunked (video) path would use /2/media/upload/initialize,
+    // /2/media/upload/{id}/append, /2/media/upload/{id}/finalize — added only
+    // when we start uploading >5 MB assets.
     const buffer = Buffer.from(mediaData, "base64");
-    const totalBytes = buffer.length;
-
-    // INIT
-    const initForm = new URLSearchParams({
-      command: "INIT",
-      media_type: mimeType,
-      total_bytes: totalBytes.toString(),
-      media_category: mediaCategory,
-    });
     const uploadUrl = `${this.apiBase}${UPLOAD_PATH}`;
-    const initRes = await fetch(uploadUrl, {
+    const form = new FormData();
+    form.append("media", new Blob([new Uint8Array(buffer)], { type: mimeType }));
+    form.append("media_category", mediaCategory);
+
+    const res = await fetch(uploadUrl, {
       method: "POST",
-      headers: {
-        ...this.getOAuthHeaders(uploadUrl, "POST"),
-        "Content-Type": "application/x-www-form-urlencoded",
-      },
-      body: initForm.toString(),
+      headers: this.getOAuthHeaders(uploadUrl, "POST"),
+      body: form,
     });
-    const { result: initData } = await this.handleResponse<{ media_id_string: string }>(
-      initRes,
-      "uploadMedia:INIT",
-    );
-    const mediaId = initData.media_id_string;
+    const { result, rateLimit } = await this.handleResponse<{
+      data?: { id?: string; media_key?: string };
+      media_id_string?: string;
+    }>(res, "uploadMedia");
 
-    // APPEND -- upload in 1MB chunks
-    const chunkSize = 1024 * 1024;
-    for (let i = 0; i * chunkSize < totalBytes; i++) {
-      const chunk = buffer.subarray(i * chunkSize, (i + 1) * chunkSize);
-      const formData = new FormData();
-      formData.append("command", "APPEND");
-      formData.append("media_id", mediaId);
-      formData.append("segment_index", i.toString());
-      formData.append("media_data", chunk.toString("base64"));
-
-      const appendRes = await fetch(uploadUrl, {
-        method: "POST",
-        headers: this.getOAuthHeaders(uploadUrl, "POST"),
-        body: formData,
-      });
-
-      if (!appendRes.ok) {
-        const text = await appendRes.text();
-        throw new Error(`uploadMedia:APPEND segment ${i} failed (HTTP ${appendRes.status}): ${text}`);
-      }
+    const mediaId = result.data?.id ?? result.media_id_string ?? "";
+    if (!mediaId) {
+      throw new Error(`uploadMedia: response missing media id: ${JSON.stringify(result)}`);
     }
-
-    // FINALIZE
-    const finalizeForm = new URLSearchParams({
-      command: "FINALIZE",
-      media_id: mediaId,
-    });
-    const finalizeRes = await fetch(uploadUrl, {
-      method: "POST",
-      headers: {
-        ...this.getOAuthHeaders(uploadUrl, "POST"),
-        "Content-Type": "application/x-www-form-urlencoded",
-      },
-      body: finalizeForm.toString(),
-    });
-    const finalizeResult = await this.handleResponse(finalizeRes, "uploadMedia:FINALIZE");
-
-    return { mediaId, ...finalizeResult };
+    return { mediaId, result, rateLimit };
   }
 
   private getOAuthHeaders(url: string, method: string): Record<string, string> {

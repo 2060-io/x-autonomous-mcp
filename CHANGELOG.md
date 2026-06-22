@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.12](https://github.com/2060-io/x-autonomous-mcp/compare/v0.1.11...v0.1.12) (2026-06-22)
+
+
+### Bug Fixes
+
+* build multi-arch Docker images on native runners ([#24](https://github.com/2060-io/x-autonomous-mcp/issues/24)) ([fbf7c63](https://github.com/2060-io/x-autonomous-mcp/commit/fbf7c637e482094ccb585712f30cf80565b4bb6f))
+
 ## [0.1.11](https://github.com/2060-io/x-autonomous-mcp/compare/v0.1.10...v0.1.11) (2026-06-22)
 
 

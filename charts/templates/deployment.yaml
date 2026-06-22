@@ -38,6 +38,11 @@ metadata:
     {{- include "xmcp.labels" . | nindent 4 }}
 spec:
   replicas: {{ .Values.replicas }}
+  {{- if .Values.persistence.enabled }}
+  # State is a per-pod file on an RWO volume — never run two pods at once.
+  strategy:
+    type: Recreate
+  {{- end }}
   selector:
     matchLabels:
       app.kubernetes.io/component: x-mcp
@@ -90,3 +95,37 @@ spec:
                   name: {{ include "xmcp.fullname" $ }}-secret
                   key: {{ $key }}
             {{- end }}
+            {{- if .Values.persistence.enabled }}
+            - name: X_MCP_STATE_FILE
+              value: {{ printf "%s/x-mcp-state.json" .Values.persistence.mountPath | quote }}
+            {{- end }}
+          {{- if .Values.persistence.enabled }}
+          volumeMounts:
+            - name: state
+              mountPath: {{ .Values.persistence.mountPath }}
+          {{- end }}
+      {{- if .Values.persistence.enabled }}
+      volumes:
+        - name: state
+          persistentVolumeClaim:
+            claimName: {{ include "xmcp.fullname" . }}-state
+      {{- end }}
+{{- if .Values.persistence.enabled }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "xmcp.fullname" . }}-state
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "xmcp.labels" . | nindent 4 }}
+spec:
+  accessModes:
+    - {{ .Values.persistence.accessMode }}
+  resources:
+    requests:
+      storage: {{ .Values.persistence.size }}
+  {{- if .Values.persistence.storageClass }}
+  storageClassName: {{ .Values.persistence.storageClass }}
+  {{- end }}
+{{- end }}

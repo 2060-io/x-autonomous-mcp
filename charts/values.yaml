@@ -7,6 +7,22 @@ image:
 
 replicas: 1
 
+# Persistent state (budget counters, engagement dedup, workflows, queue).
+# The MCP server's safety rails (daily budgets, dedup) live in a single JSON
+# state file. Without a volume this file is on the container's ephemeral
+# filesystem and is wiped on every restart — resetting budgets to 0 and losing
+# dedup history. Keep this enabled for any unattended deployment.
+# NOTE: state is a per-pod file with no shared locking, so this chart only
+# supports a single replica (replicas: 1). When enabled, the Deployment uses
+# the Recreate strategy so a rolling update never runs two pods on one RWO PVC.
+persistence:
+  enabled: true
+  mountPath: /data
+  accessMode: ReadWriteOnce
+  size: 1Gi
+  # Leave empty to use the cluster default StorageClass.
+  storageClass: ""
+
 resources:
   requests:
     cpu: '100m'

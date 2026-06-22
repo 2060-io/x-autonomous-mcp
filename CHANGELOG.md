@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.1.10](https://github.com/2060-io/x-autonomous-mcp/compare/v0.1.9...v0.1.10) (2026-06-22)
+
+
+### Features
+
+* **chart:** persist MCP state to a PVC to survive restarts ([#18](https://github.com/2060-io/x-autonomous-mcp/issues/18)) ([a8beb2b](https://github.com/2060-io/x-autonomous-mcp/commit/a8beb2b35a093fd6e67bca0a2c0db9a831889dfc))
+
+
+### Bug Fixes
+
+* **state:** use recent timestamp in load test to avoid 90-day prune ([#20](https://github.com/2060-io/x-autonomous-mcp/issues/20)) ([bfdf379](https://github.com/2060-io/x-autonomous-mcp/commit/bfdf379473ed82b920569fdb4feda0fbb29485f5))
+
 ## [0.1.9](https://github.com/2060-io/x-autonomous-mcp/compare/v0.1.8...v0.1.9) (2026-04-18)
 
 

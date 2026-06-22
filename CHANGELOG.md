@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.11](https://github.com/2060-io/x-autonomous-mcp/compare/v0.1.10...v0.1.11) (2026-06-22)
+
+
+### Bug Fixes
+
+* note Docker support on README clients line ([#22](https://github.com/2060-io/x-autonomous-mcp/issues/22)) ([a5a99af](https://github.com/2060-io/x-autonomous-mcp/commit/a5a99aff95fe01a395fed626d0bc4a2584dd3516))
+
 ## [0.1.10](https://github.com/2060-io/x-autonomous-mcp/compare/v0.1.9...v0.1.10) (2026-06-22)
 
 

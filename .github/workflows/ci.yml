@@ -44,8 +44,14 @@ jobs:
       - name: Start X API playground
         run: |
           playground start --port 8090 &
-          sleep 2
-          curl -sf http://localhost:8090/health
+          # The mock's boot time varies (state persistence init) — a fixed
+          # sleep races on slow runners. Poll health for up to 60s instead.
+          for i in $(seq 1 30); do
+            curl -sf http://localhost:8090/health && exit 0
+            sleep 2
+          done
+          echo "playground did not become healthy within 60s" >&2
+          exit 1
       - run: npm ci
       - run: npm run build
       - run: npm run test:integration

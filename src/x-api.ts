@@ -481,10 +481,12 @@ export class XApiClient {
     // signature base string per RFC 5849 §3.4.1.3.1. Leaving Content-Type off
     // lets fetch() set the multipart boundary automatically.
     //
-    // The chunked (video) path would use /2/media/upload/initialize,
-    // /2/media/upload/{id}/append, /2/media/upload/{id}/finalize — added only
-    // when we start uploading >5 MB assets.
+    // Videos always take the chunked path below: the simple endpoint rejects
+    // media_category tweet_video with a bare HTTP 400.
     const buffer = Buffer.from(mediaData, "base64");
+    if (mediaCategory === "tweet_video" || mimeType.startsWith("video/")) {
+      return this.uploadMediaChunked(buffer, mimeType, mediaCategory);
+    }
     const uploadUrl = `${this.apiBase}${UPLOAD_PATH}`;
     const form = new FormData();
     form.append("media", new Blob([new Uint8Array(buffer)], { type: mimeType }));
@@ -505,6 +507,70 @@ export class XApiClient {
       throw new Error(`uploadMedia: response missing media id: ${JSON.stringify(result)}`);
     }
     return { mediaId, result, rateLimit };
+  }
+
+  // Chunked upload (https://docs.x.com/x-api/media/media-upload): INIT with the
+  // byte count, APPEND 1 MB multipart segments, FINALIZE, then poll STATUS until
+  // the async transcode finishes — a tweet referencing a still-processing video
+  // is rejected. Multipart fields stay out of the OAuth signature (RFC 5849);
+  // the STATUS query string is signed by oauth-1.0a from the URL.
+  private async uploadMediaChunked(buffer: Buffer, mimeType: string, mediaCategory: string) {
+    const initUrl = `${this.apiBase}${UPLOAD_PATH}/initialize`;
+    const initRes = await this.oauthFetch(initUrl, "POST", {
+      media_type: mimeType,
+      total_bytes: buffer.length,
+      media_category: mediaCategory,
+    });
+    const { result: initResult } = await this.handleResponse<{ data?: { id?: string } }>(
+      initRes,
+      "uploadMedia.initialize",
+    );
+    const mediaId = initResult.data?.id ?? "";
+    if (!mediaId) {
+      throw new Error(`uploadMedia.initialize: response missing media id: ${JSON.stringify(initResult)}`);
+    }
+
+    const CHUNK_BYTES = 1024 * 1024;
+    for (let offset = 0, segment = 0; offset < buffer.length; offset += CHUNK_BYTES, segment++) {
+      const chunk = buffer.subarray(offset, Math.min(offset + CHUNK_BYTES, buffer.length));
+      const appendUrl = `${this.apiBase}${UPLOAD_PATH}/${mediaId}/append`;
+      const form = new FormData();
+      form.append("media", new Blob([new Uint8Array(chunk)], { type: mimeType }));
+      form.append("segment_index", String(segment));
+      const res = await fetch(appendUrl, {
+        method: "POST",
+        headers: this.getOAuthHeaders(appendUrl, "POST"),
+        body: form,
+      });
+      if (!res.ok) {
+        throw new Error(`uploadMedia.append segment ${segment} failed (HTTP ${res.status}): ${await res.text()}`);
+      }
+    }
+
+    const finalizeUrl = `${this.apiBase}${UPLOAD_PATH}/${mediaId}/finalize`;
+    const finalizeRes = await this.oauthFetch(finalizeUrl, "POST");
+    type ProcessingInfo = { state?: string; check_after_secs?: number; error?: unknown };
+    const { result: finalizeResult, rateLimit } = await this.handleResponse<{
+      data?: { id?: string; processing_info?: ProcessingInfo };
+    }>(finalizeRes, "uploadMedia.finalize");
+
+    let info = finalizeResult.data?.processing_info;
+    let waitedSecs = 0;
+    while (info && (info.state === "pending" || info.state === "in_progress") && waitedSecs < 120) {
+      const delaySecs = Math.min(Math.max(info.check_after_secs ?? 3, 1), 15);
+      await new Promise((resolve) => setTimeout(resolve, delaySecs * 1000));
+      waitedSecs += delaySecs;
+      const statusUrl = `${this.apiBase}${UPLOAD_PATH}?command=STATUS&media_id=${mediaId}`;
+      const statusRes = await this.oauthFetch(statusUrl, "GET");
+      const { result: statusResult } = await this.handleResponse<{
+        data?: { processing_info?: ProcessingInfo };
+      }>(statusRes, "uploadMedia.status");
+      info = statusResult.data?.processing_info;
+    }
+    if (info?.state === "failed") {
+      throw new Error(`uploadMedia: video processing failed: ${JSON.stringify(info)}`);
+    }
+    return { mediaId, result: finalizeResult, rateLimit };
   }
 
   private getOAuthHeaders(url: string, method: string): Record<string, string> {

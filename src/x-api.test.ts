@@ -323,7 +323,7 @@ describe("XApiClient", () => {
 
       const url = vi.mocked(fetch).mock.calls[0][0] as string;
       expect(url).toContain("/lists/list123/members");
-      expect(url).toContain("pinned_tweet_id");
+      expect(url).toContain("public_metrics");
       const headers = vi.mocked(fetch).mock.calls[0][1]?.headers as Record<string, string>;
       expect(headers["Authorization"]).toBe("Bearer test-bearer");
     });

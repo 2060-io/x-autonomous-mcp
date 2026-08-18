@@ -289,7 +289,7 @@ export class XApiClient {
 
   async getUser(params: { username?: string; userId?: string }) {
     const fields = new URLSearchParams({
-      "user.fields": "created_at,description,public_metrics,verified,url,location,pinned_tweet_id",
+      "user.fields": "created_at,description,public_metrics,verified,url,location",
     });
 
     let url: string;
@@ -338,7 +338,7 @@ export class XApiClient {
   async getFollowers(userId: string, maxResults: number = 100, nextToken?: string) {
     const params = new URLSearchParams({
       max_results: Math.min(Math.max(maxResults, 1), 1000).toString(),
-      "user.fields": "created_at,description,public_metrics,verified,pinned_tweet_id",
+      "user.fields": "created_at,description,public_metrics,verified",
     });
     if (nextToken) params.set("pagination_token", nextToken);
 
@@ -350,7 +350,7 @@ export class XApiClient {
   async getFollowing(userId: string, maxResults: number = 100, nextToken?: string) {
     const params = new URLSearchParams({
       max_results: Math.min(Math.max(maxResults, 1), 1000).toString(),
-      "user.fields": "created_at,description,public_metrics,verified,pinned_tweet_id",
+      "user.fields": "created_at,description,public_metrics,verified",
     });
     if (nextToken) params.set("pagination_token", nextToken);
 
@@ -604,7 +604,7 @@ export class XApiClient {
   async getListMembers(listId: string, maxResults: number = 100, nextToken?: string) {
     const params = new URLSearchParams({
       max_results: Math.min(Math.max(maxResults, 1), 100).toString(),
-      "user.fields": "created_at,description,public_metrics,verified,pinned_tweet_id",
+      "user.fields": "created_at,description,public_metrics,verified",
     });
     if (nextToken) params.set("pagination_token", nextToken);
 

@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.13](https://github.com/2060-io/x-autonomous-mcp/compare/v0.1.12...v0.1.13) (2026-09-08)
+
+
+### Features
+
+* chunked media upload for video (initialize/append/finalize + STATUS poll) ([#26](https://github.com/2060-io/x-autonomous-mcp/issues/26)) ([6e0400a](https://github.com/2060-io/x-autonomous-mcp/commit/6e0400a2cbb02eda1551fc804abd211d31c901f8))
+
 ## [0.1.12](https://github.com/2060-io/x-autonomous-mcp/compare/v0.1.11...v0.1.12) (2026-06-22)
 
 

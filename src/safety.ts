@@ -259,6 +259,18 @@ const PARAMETER_HINTS: Record<string, Record<string, string>> = {
   },
 };
 
+// Hints valid for every tool: ways to name the `account` guard. Plain typos
+// ("acount", "accounts") reach 'account' through the Levenshtein fallback.
+const ACCOUNT_HINT = "Use 'account' (a handle with or without @, or a numeric user id) to name the X account this call must act for.";
+const GLOBAL_PARAMETER_HINTS: Record<string, string> = {
+  as_account: ACCOUNT_HINT,
+  as_user: ACCOUNT_HINT,
+  on_behalf_of: ACCOUNT_HINT,
+  acting_as: ACCOUNT_HINT,
+  account_handle: ACCOUNT_HINT,
+  x_account: ACCOUNT_HINT,
+};
+
 function levenshtein(a: string, b: string): number {
   const m = a.length, n = b.length;
   const dp: number[][] = Array.from({ length: m + 1 }, () => new Array(n + 1).fill(0));
@@ -309,7 +321,7 @@ export function isProtectedAccount(input: string, protectedAccounts: ProtectedAc
 
 export function getParameterHint(toolName: string, unknownKey: string, validKeys?: string[]): string | null {
   // Check hardcoded hints first (e.g., "use reply_to_tweet tool instead")
-  const hint = PARAMETER_HINTS[toolName]?.[unknownKey];
+  const hint = PARAMETER_HINTS[toolName]?.[unknownKey] ?? GLOBAL_PARAMETER_HINTS[unknownKey];
   if (hint) return hint;
 
   // Fall back to Levenshtein distance suggestion

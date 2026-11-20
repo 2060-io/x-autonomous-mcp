@@ -7,11 +7,42 @@ image:
 
 replicas: 1
 
+# Where the X account comes from.
+# fromHeader: false (default): one X account, from the X_API_* variables in
+#   `secret` below. Unchanged behaviour.
+# fromHeader: true: one X account per MCP session, from the X-Account request
+#   header (<api_key>:<api_secret>:<access_token>:<access_token_secret>).
+#   Sets X_MCP_ACCOUNTS=header. Leave `secret` empty: the server ignores the
+#   X_API_* variables in this mode. Each account keeps its own state file,
+#   <persistence.mountPath>/accounts/<user id>.json.
+accounts:
+  fromHeader: false
+  # Header mode: close a session after this many seconds without a request,
+  # which also drops the account's client when it was the last session.
+  # 0 = never.
+  sessionIdleSeconds: 1800
+
+# Optional NetworkPolicy on the MCP pod (ingress only; egress is untouched,
+# the server needs DNS and api.x.com). When enabled, only pods matching
+# ingressFrom.podSelector may reach the MCP port, from the release namespace,
+# or from namespaces matching ingressFrom.namespaceSelector when it is set.
+# Both are Kubernetes label selectors. With no podSelector, nothing may
+# connect: an empty selector is never read as "all pods".
+# The chart creates no Ingress: the Service is ClusterIP.
+networkPolicy:
+  enabled: false
+  ingressFrom:
+    # e.g. { matchLabels: { app.kubernetes.io/name: ayni-agent } }
+    podSelector: {}
+    # e.g. { matchLabels: { kubernetes.io/metadata.name: ayni } }
+    namespaceSelector: {}
+
 # Persistent state (budget counters, engagement dedup, workflows, queue).
-# The MCP server's safety rails (daily budgets, dedup) live in a single JSON
-# state file. Without a volume this file is on the container's ephemeral
-# filesystem and is wiped on every restart — resetting budgets to 0 and losing
-# dedup history. Keep this enabled for any unattended deployment.
+# The MCP server's safety rails (daily budgets, dedup) live in a JSON state
+# file: one file in single-account mode, one per account in header mode.
+# Without a volume this state is on the container's ephemeral filesystem and
+# is wiped on every restart — resetting budgets to 0 and losing dedup
+# history. Keep this enabled for any unattended deployment.
 # NOTE: state is a per-pod file with no shared locking, so this chart only
 # supports a single replica (replicas: 1). When enabled, the Deployment uses
 # the Recreate strategy so a rolling update never runs two pods on one RWO PVC.
@@ -62,6 +93,7 @@ env:
 # X API credentials — stored in a Kubernetes Secret.
 # Set these per-deployment (e.g. via --set or values override).
 # The chart creates and manages this Secret.
+# Single-account mode only: with accounts.fromHeader, leave this empty.
 # secret:
 #   X_API_KEY: 'your-api-key'
 #   X_API_SECRET: 'your-api-secret'

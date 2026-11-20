@@ -8,8 +8,13 @@ An autonomous MCP (Model Context Protocol) server for the X (Twitter) API v2. Bu
 
 | File | Purpose |
 |------|---------|
-| `src/index.ts` | MCP server, tool definitions, safety checks inline, global `VALID_KEYS` map |
-| `src/x-api.ts` | `XApiClient` class — OAuth 1.0a + Bearer Token auth, raw fetch calls to `api.x.com/2` |
+| `src/index.ts` | Entry point: reads the config, starts stdio or HTTP, single-account or header mode |
+| `src/server.ts` | `buildServer(ctx)`: the 31 tool definitions, safety checks inline, the `account` guard; one server per session |
+| `src/tool-meta.ts` | `VALID_KEYS` map and `TOOL_ANNOTATIONS` (MCP annotations of every tool) |
+| `src/http.ts` | Streamable HTTP app: sessions, the `X-Account` guard and session binding in header mode, idle session cleanup |
+| `src/accounts.ts` | Header mode: `X-Account` parsing, header hash + constant-time compare, `account` argument check, `AccountRegistry` (one client per account), per-account state paths |
+| `src/config.ts` | Startup config: accounts mode, transport, state paths, session idle timeout |
+| `src/x-api.ts` | `XApiClient` class — OAuth 1.0a + Bearer Token auth (OAuth 1.0a reads without a bearer), raw fetch calls to `api.x.com/2` |
 | `src/helpers.ts` | Pure utilities: `parseTweetId`, `errorMessage`, `formatResult` |
 | `src/state.ts` | Persistent state: budget counters, engagement dedup sets, workflow storage, atomic file I/O |
 | `src/compact.ts` | Response transformation: verbose API → compact form (flat metrics, author resolution, follower ratio) |
@@ -21,7 +26,13 @@ An autonomous MCP (Model Context Protocol) server for the X (Twitter) API v2. Bu
 | `src/workflow-reply-track.ts` | Reply track state machine: `advanceReplyTrack` |
 | `src/workflow-cleanup.ts` | Non-follower cleanup: `cleanupNonFollowers` |
 
-No Twitter SDK dependency. Auth uses `oauth-1.0a` + `crypto.createHmac`. Read operations use Bearer Token, write operations use OAuth 1.0a.
+No Twitter SDK dependency. Auth uses `oauth-1.0a` + `crypto.createHmac`. Read operations use Bearer Token, write operations use OAuth 1.0a. In header mode there is no bearer token and reads are signed with OAuth 1.0a user context too (`normalizeSignedUrl` writes query spaces as `%20` so the signature matches).
+
+## Accounts
+
+- **Single-account (default):** one account from the `X_API_*` variables, one state file. stdio or HTTP.
+- **Header mode (`X_MCP_ACCOUNTS=header`, HTTP only):** each MCP session carries `X-Account: <api_key>:<api_secret>:<access_token>:<access_token_secret>`. `initialize` checks the format and the keys (`GET /2/users/me`), and binds the session to that account (user id + HMAC of the header). Every later request must carry the same header (constant-time compare) or gets 401. One `XApiClient` per account in `AccountRegistry`, dropped when its last session closes. State per account in `<state dir>/accounts/<user id>.json`; budget limits and the other settings stay global.
+- Credentials never go into logs, errors, tool results or state. Tests capture the logger and the console to check it.
 
 ## Tools
 
@@ -33,6 +44,9 @@ No Twitter SDK dependency. Auth uses `oauth-1.0a` + `crypto.createHmac`. Read op
 **Media:** `upload_media`
 **Metrics:** `get_metrics`
 **Workflows:** `get_next_task`, `submit_task`, `start_workflow`, `get_workflow_status`, `cleanup_non_followers`
+**Queue / digest:** `get_queue`, `complete_queue_item`, `get_digest`
+
+Every tool takes the optional `account` guard (handle or numeric user id; a mismatch refuses and does nothing) and has MCP annotations in `TOOL_ANNOTATIONS`. A new tool needs entries in both `VALID_KEYS` and `TOOL_ANNOTATIONS` (registration throws otherwise) and in the expected table of `server.test.ts`. The workflow tools run due workflow steps that can delete and unfollow, so they are marked destructive.
 
 ## Safety Features
 
@@ -45,6 +59,7 @@ No Twitter SDK dependency. Auth uses `oauth-1.0a` + `crypto.createHmac`. Read op
 7. **Destructive tool budget** — `delete_tweet` and `unfollow_user` are budget-limited like all other write tools. Set `X_MCP_MAX_DELETES=0` / `X_MCP_MAX_UNFOLLOWS=0` to block them entirely.
 8. **Protected accounts** — `X_MCP_PROTECTED_ACCOUNTS` lists usernames that cannot be unfollowed by any tool or workflow.
 9. **Active workflow protection** — `cleanup_non_followers` automatically skips users targeted by active `follow_cycle` or `reply_track` workflows.
+10. **Account guard**: every tool's optional `account` argument must match the session's account, or the tool refuses and does nothing.
 
 ## Key Features
 
@@ -66,7 +81,7 @@ npm start        # node dist/index.js (stdio MCP server)
 
 ## Environment Variables
 
-**Required (5):**
+**Required (5), single-account mode only:**
 ```
 X_API_KEY              # Consumer Key (OAuth 1.0a)
 X_API_SECRET           # Consumer Secret
@@ -90,6 +105,13 @@ X_MCP_DEDUP            # Engagement dedup (default: true)
 X_MCP_PROTECTED_ACCOUNTS # Comma-separated usernames that cannot be unfollowed
 X_MCP_MAX_WORKFLOWS    # Max active workflows (default: 200)
 X_MCP_STATE_FILE       # State file path (default: {cwd}/x-mcp-state.json)
+```
+
+**Header mode (optional):**
+```
+X_MCP_ACCOUNTS         # "header": one account per MCP session from the X-Account header (needs MCP_TRANSPORT=http); unset = single account
+X_MCP_STATE_DIR        # State directory, files in <dir>/accounts/<user id>.json (default: dirname of X_MCP_STATE_FILE, else cwd)
+X_MCP_SESSION_IDLE_SECONDS # Close sessions idle this long (default 1800, 0 = never)
 ```
 
 ## Rules

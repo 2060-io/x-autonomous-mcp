@@ -28,16 +28,45 @@ export interface XApiConfig {
   apiSecret: string;
   accessToken: string;
   accessTokenSecret: string;
-  bearerToken: string;
+  // OAuth 2.0 app bearer token for reads. Without it, reads are signed with
+  // OAuth 1.0a user context like writes (the multi-account header mode).
+  bearerToken?: string;
   apiBase?: string; // default: "https://api.x.com/2"
+}
+
+/** The account the credentials act for, from GET /2/users/me. */
+export interface AuthenticatedUser {
+  id: string;
+  username: string;
+}
+
+/** An X API failure with its HTTP status (0 when no response came back). */
+export class XApiError extends Error {
+  constructor(message: string, readonly status: number) {
+    super(message);
+    this.name = "XApiError";
+  }
+}
+
+/**
+ * OAuth 1.0a signs the decoded query (RFC 5849 3.4.1.3). URLSearchParams
+ * writes a space as "+", which the oauth-1.0a library does not decode, so a
+ * signed URL with a space (a search query) would carry a signature X rejects.
+ * "%20" means the same to X and is signed correctly. A literal "+" is already
+ * "%2B" in a URLSearchParams query, so every "+" left in the query is a space.
+ */
+export function normalizeSignedUrl(url: string): string {
+  const q = url.indexOf("?");
+  if (q === -1) return url;
+  return url.slice(0, q + 1) + url.slice(q + 1).replace(/\+/g, "%20");
 }
 
 export class XApiClient {
   private oauth: OAuth;
   private token: OAuth.Token;
-  private bearerToken: string;
+  private bearerToken: string | undefined;
   private apiBase: string;
-  private authenticatedUserIdPromise: Promise<string> | null = null;
+  private authenticatedUserPromise: Promise<AuthenticatedUser> | null = null;
 
   constructor(private config: XApiConfig) {
     this.apiBase = config.apiBase ?? DEFAULT_API_BASE;
@@ -75,11 +104,12 @@ export class XApiClient {
   }
 
   private async oauthFetch(
-    url: string,
+    rawUrl: string,
     method: string,
     body?: unknown,
     contentType?: string,
   ): Promise<Response> {
+    const url = normalizeSignedUrl(rawUrl);
     const requestData = { url, method };
     const authHeader = this.oauth.toHeader(this.oauth.authorize(requestData, this.token));
 
@@ -105,6 +135,8 @@ export class XApiClient {
   }
 
   private async bearerFetch(url: string): Promise<Response> {
+    // No app bearer token: read with OAuth 1.0a user context.
+    if (!this.bearerToken) return this.oauthFetch(url, "GET");
     return fetch(url, {
       method: "GET",
       headers: {
@@ -121,8 +153,9 @@ export class XApiClient {
       const resetTime = rateLimit
         ? new Date(rateLimit.reset * 1000).toISOString()
         : "unknown";
-      throw new Error(
+      throw new XApiError(
         `X API rate limited on ${operation}. Reset at: ${resetTime}. ${rateLimitStr}`,
+        response.status,
       );
     }
 
@@ -131,8 +164,9 @@ export class XApiClient {
     try {
       data = JSON.parse(text);
     } catch {
-      throw new Error(
+      throw new XApiError(
         `${operation} failed (HTTP ${response.status}): ${text.slice(0, 500)}`,
+        response.status,
       );
     }
 
@@ -141,8 +175,9 @@ export class XApiClient {
       const errorMsg = (Array.isArray(errorBody.errors)
         ? errorBody.errors.map((e) => e.detail || e.message).join("; ")
         : "") || text.slice(0, 500);
-      throw new Error(
+      throw new XApiError(
         `${operation} failed (HTTP ${response.status}): ${errorMsg}. ${rateLimitStr}`,
+        response.status,
       );
     }
 
@@ -150,20 +185,39 @@ export class XApiClient {
   }
 
   async getAuthenticatedUserId(): Promise<string> {
-    if (!this.authenticatedUserIdPromise) {
-      this.authenticatedUserIdPromise = this.fetchAuthenticatedUserId();
-    }
-    return this.authenticatedUserIdPromise;
+    return (await this.getAuthenticatedUser()).id;
   }
 
-  private async fetchAuthenticatedUserId(): Promise<string> {
+  /** The account these credentials act for, fetched once and cached (a failure is not cached). */
+  async getAuthenticatedUser(): Promise<AuthenticatedUser> {
+    if (!this.authenticatedUserPromise) {
+      const pending = this.fetchAuthenticatedUser("getAuthenticatedUser");
+      this.authenticatedUserPromise = pending;
+      pending.catch(() => {
+        if (this.authenticatedUserPromise === pending) this.authenticatedUserPromise = null;
+      });
+    }
+    return this.authenticatedUserPromise;
+  }
+
+  /**
+   * Check the credentials against X now (GET /2/users/me, never from cache)
+   * and remember the account they act for. Throws XApiError with X's status.
+   */
+  async verifyCredentials(): Promise<AuthenticatedUser> {
+    const user = await this.fetchAuthenticatedUser("verifyCredentials");
+    this.authenticatedUserPromise = Promise.resolve(user);
+    return user;
+  }
+
+  private async fetchAuthenticatedUser(operation: string): Promise<AuthenticatedUser> {
     const url = `${this.apiBase}/users/me`;
     const response = await this.oauthFetch(url, "GET");
-    const { result } = await this.handleResponse<XApiResponse<{ id: string }>>(response, "getAuthenticatedUser");
+    const { result } = await this.handleResponse<XApiResponse<{ id: string; username?: string }>>(response, operation);
     if (!result.data?.id) {
-      throw new Error("getAuthenticatedUser: API returned no user data");
+      throw new Error(`${operation}: API returned no user data`);
     }
-    return result.data.id;
+    return { id: result.data.id, username: result.data.username ?? "" };
   }
 
   // --- User ID resolution ---
@@ -574,7 +628,7 @@ export class XApiClient {
   }
 
   private getOAuthHeaders(url: string, method: string): Record<string, string> {
-    const requestData = { url, method };
+    const requestData = { url: normalizeSignedUrl(url), method };
     const authHeader = this.oauth.toHeader(this.oauth.authorize(requestData, this.token));
     return { Authorization: authHeader.Authorization };
   }

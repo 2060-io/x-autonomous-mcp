@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.14](https://github.com/2060-io/x-autonomous-mcp/compare/v0.1.13...v0.1.14) (2026-11-20)
+
+
+### Features
+
+* serve many X accounts from one deployment via the X-Account header ([#28](https://github.com/2060-io/x-autonomous-mcp/issues/28)) ([05a498a](https://github.com/2060-io/x-autonomous-mcp/commit/05a498a255f245f8bde01e8b6181986f6aa44ebd))
+
 ## [0.1.13](https://github.com/2060-io/x-autonomous-mcp/compare/v0.1.12...v0.1.13) (2026-09-08)
 
 

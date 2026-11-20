@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { XApiClient } from "./x-api.js";
+import { XApiClient, XApiError, normalizeSignedUrl } from "./x-api.js";
 
 function makeClient(): XApiClient {
   return new XApiClient({
@@ -406,5 +406,99 @@ describe("XApiClient", () => {
       // Raw user objects preserved (public_metrics intact for compactResponse)
       expect((result.data[0] as Record<string, unknown>).public_metrics).toBeDefined();
     });
+  });
+});
+
+// --- Multi-account (header) mode: no app bearer token ---
+
+function makeUserContextClient(): XApiClient {
+  return new XApiClient({
+    apiKey: "test-key",
+    apiSecret: "test-secret",
+    accessToken: "1-test-access",
+    accessTokenSecret: "test-access-secret",
+  });
+}
+
+describe("XApiClient without a bearer token", () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("signs reads with OAuth 1.0a user context", async () => {
+    mockFetchResponse({ data: [], meta: { result_count: 0 } });
+    await makeUserContextClient().searchTweets("AI safety -is:retweet");
+    const [url, init] = vi.mocked(fetch).mock.calls[0] as [string, RequestInit];
+    const auth = (init.headers as Record<string, string>).Authorization;
+    expect(auth).toMatch(/^OAuth /);
+    expect(auth).toContain('oauth_consumer_key="test-key"');
+    // A space is sent as %20 (signed correctly), never as "+".
+    expect(url).toContain("query=AI%20safety%20-is%3Aretweet");
+    expect(url).not.toContain("+");
+  });
+
+  it("still reads with the bearer token when one is configured", async () => {
+    mockFetchResponse({ data: { id: "1" } });
+    await makeClient().getTweet("1");
+    const [, init] = vi.mocked(fetch).mock.calls[0] as [string, RequestInit];
+    expect((init.headers as Record<string, string>).Authorization).toBe("Bearer test-bearer");
+  });
+});
+
+describe("normalizeSignedUrl", () => {
+  it("turns query spaces written as + into %20 and keeps the rest", () => {
+    const q = new URLSearchParams({ query: "a b+c", "tweet.fields": "a,b" }).toString();
+    expect(normalizeSignedUrl(`https://api.x.com/2/tweets/search/recent?${q}`)).toBe(
+      "https://api.x.com/2/tweets/search/recent?query=a%20b%2Bc&tweet.fields=a%2Cb",
+    );
+  });
+
+  it("leaves a URL without a query alone", () => {
+    expect(normalizeSignedUrl("https://api.x.com/2/users/me")).toBe("https://api.x.com/2/users/me");
+  });
+});
+
+describe("verifyCredentials", () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("asks X every time and seeds the authenticated user", async () => {
+    mockFetchResponse({ data: { id: "42", username: "someone" } });
+    const client = makeUserContextClient();
+    expect(await client.verifyCredentials()).toEqual({ id: "42", username: "someone" });
+    expect(await client.verifyCredentials()).toEqual({ id: "42", username: "someone" });
+    expect(vi.mocked(fetch)).toHaveBeenCalledTimes(2);
+    expect(await client.getAuthenticatedUserId()).toBe("42");
+    expect(await client.getAuthenticatedUser()).toEqual({ id: "42", username: "someone" });
+    expect(vi.mocked(fetch)).toHaveBeenCalledTimes(2);
+  });
+
+  it("throws an XApiError carrying X's status", async () => {
+    mockFetchResponse({ title: "Unauthorized", detail: "Unauthorized", status: 401 }, 401);
+    const err = await makeUserContextClient().verifyCredentials().catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(XApiError);
+    expect((err as XApiError).status).toBe(401);
+  });
+});
+
+describe("getAuthenticatedUser", () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("does not cache a failure", async () => {
+    const fetchMock = vi.fn()
+      .mockRejectedValueOnce(new TypeError("fetch failed"))
+      .mockResolvedValue({
+        ok: true,
+        status: 200,
+        headers: new Headers(),
+        text: () => Promise.resolve(JSON.stringify({ data: { id: "7", username: "seven" } })),
+      });
+    vi.stubGlobal("fetch", fetchMock);
+    const client = makeClient();
+    await expect(client.getAuthenticatedUser()).rejects.toThrow("fetch failed");
+    expect(await client.getAuthenticatedUser()).toEqual({ id: "7", username: "seven" });
   });
 });

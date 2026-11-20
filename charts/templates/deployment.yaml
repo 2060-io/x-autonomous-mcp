@@ -99,6 +99,16 @@ spec:
             - name: X_MCP_STATE_FILE
               value: {{ printf "%s/x-mcp-state.json" .Values.persistence.mountPath | quote }}
             {{- end }}
+            {{- if .Values.accounts.fromHeader }}
+            - name: X_MCP_ACCOUNTS
+              value: "header"
+            - name: X_MCP_SESSION_IDLE_SECONDS
+              value: {{ .Values.accounts.sessionIdleSeconds | quote }}
+            {{- if .Values.persistence.enabled }}
+            - name: X_MCP_STATE_DIR
+              value: {{ .Values.persistence.mountPath | quote }}
+            {{- end }}
+            {{- end }}
           {{- if .Values.persistence.enabled }}
           volumeMounts:
             - name: state
@@ -127,5 +137,39 @@ spec:
       storage: {{ .Values.persistence.size }}
   {{- if .Values.persistence.storageClass }}
   storageClassName: {{ .Values.persistence.storageClass }}
+  {{- end }}
+{{- end }}
+{{- if .Values.networkPolicy.enabled }}
+{{- $from := .Values.networkPolicy.ingressFrom | default dict }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "xmcp.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "xmcp.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/component: x-mcp
+      {{- include "xmcp.selectorLabels" . | nindent 6 }}
+  policyTypes:
+    - Ingress
+  {{- if $from.podSelector }}
+  ingress:
+    - from:
+        - podSelector:
+            {{- toYaml $from.podSelector | nindent 12 }}
+          {{- with $from.namespaceSelector }}
+          namespaceSelector:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+      ports:
+        - protocol: TCP
+          port: {{ .Values.service.port }}
+  {{- else }}
+  # No ingressFrom.podSelector: no pod may connect.
+  ingress: []
   {{- end }}
 {{- end }}

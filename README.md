@@ -101,6 +101,32 @@ X_MCP_PROTECTED_ACCOUNTS=friend1,friend2,@mentor
 
 Unknown parameters are caught by the MCP server (not silently ignored). Unknown keys trigger fuzzy-matched suggestions or hardcoded redirect hints — the LLM learns from its mistake instead of getting an opaque validation error.
 
+### Account guard (`account` on every tool)
+
+Every tool takes an optional `account` argument: a handle (`@name` or `name`) or a numeric user id. When it is given and is not the account the session acts for, the tool refuses and does nothing:
+
+```
+Error: Account mismatch: this session acts for @mybot (user id 1234), not @otherbot. Nothing was done.
+```
+
+A client that shows the account on an approval card can pin `account` to it, so the server checks the card. Without the argument, tools behave as before. In single-account mode the session's account is the one `GET /2/users/me` returns for the configured keys.
+
+### MCP tool annotations
+
+Every tool carries MCP annotations, so a client can tell reads from writes and from deletions. A client that derives one rule per tool (read-only means read; else destructive means delete; else open world means external; else write) gets:
+
+| Tool | readOnly | destructive | idempotent | openWorld |
+|------|----------|-------------|------------|-----------|
+| `get_tweet`, `search_tweets`, `get_user`, `get_timeline`, `get_mentions`, `get_followers`, `get_following`, `get_non_followers`, `get_metrics`, `get_list_members`, `get_list_tweets`, `get_followed_lists`, `get_digest` | true | false | true | true |
+| `get_queue`, `get_workflow_status` | true | false | true | false |
+| `post_tweet`, `reply_to_tweet`, `quote_tweet`, `like_tweet`, `retweet`, `follow_user`, `upload_media` | false | false | false | true |
+| `unlike_tweet`, `unretweet` | false | true | true | true |
+| `delete_tweet`, `unfollow_user`, `cleanup_non_followers` | false | true | false | true |
+| `get_next_task`, `submit_task`, `start_workflow` | false | true | false | true |
+| `complete_queue_item` | false | false | true | false |
+
+The three workflow tools run every due workflow step, and a due step can unlike, delete a reply and unfollow (see [Workflow System](#workflow-system)), so they are marked destructive, and `get_next_task` is not read-only despite its name. `get_digest` calls X to close queue items the operator already posted. `delete_tweet` and `unfollow_user` spend budget on every call, so they are not marked idempotent.
+
 ---
 
 ## Features
@@ -444,6 +470,76 @@ X_MCP_DEDUP=true
 
 ---
 
+## Multi-account mode (one deployment, many X accounts)
+
+By default the server acts for one X account, from the `X_API_*` variables. With `X_MCP_ACCOUNTS=header`, one deployment serves many accounts: each MCP session brings its own account in a request header. This mode needs the streamable HTTP transport (`MCP_TRANSPORT=http`); over stdio the server refuses to start and says why.
+
+```bash
+X_MCP_ACCOUNTS=header MCP_TRANSPORT=http X_MCP_STATE_DIR=/data node dist/index.js
+```
+
+`X_API_KEY`, `X_API_SECRET`, `X_ACCESS_TOKEN`, `X_ACCESS_TOKEN_SECRET` and `X_BEARER_TOKEN` are not needed (and are ignored) in this mode.
+
+### The `X-Account` header
+
+Each X account has its own developer app, so the header carries the four OAuth 1.0a values of that app and account:
+
+```
+X-Account: <api_key>:<api_secret>:<access_token>:<access_token_secret>
+```
+
+The format is checked strictly before anything else:
+
+| Part | Format |
+|------|--------|
+| `api_key` | 10 to 64 ASCII letters or digits (X issues 25) |
+| `api_secret` | 20 to 128 ASCII letters or digits (X issues 50) |
+| `access_token` | `<user id>-<letters and digits>`: 1 to 20 digits, a dash, 10 to 64 ASCII letters or digits |
+| `access_token_secret` | 20 to 128 ASCII letters or digits (X issues 45) |
+
+Exactly four parts separated by `:`, at most 512 characters, nothing else: no spaces, no padding, no second header (Node joins repeated headers with `, `, which fails the check).
+
+### Sessions are bound to one account
+
+- On `initialize`, the server checks the header format, then checks the keys against X with `GET /2/users/me`. The session is bound to that account: its user id, and a keyed hash of the header (HMAC-SHA256 with a random per-process key, kept in memory only).
+- Every later request on the session (POST, GET and DELETE) must carry the same header. It is compared with the session's hash in constant time.
+- A missing or malformed header, keys X rejects, or a header that differs from the session's answer HTTP 401 with a JSON-RPC error (code `-32001`) that never repeats the header. If X cannot be reached to check the keys, the answer is HTTP 503. An unknown session id answers HTTP 404, which tells an MCP client to initialize again.
+- A session with no request for `X_MCP_SESSION_IDLE_SECONDS` (default 1800, `0` = never) is closed, for clients that go away without a DELETE.
+- Credentials are never logged, never put in an error, a tool result or the state, and never echoed. Logs name the X user id only.
+
+### Reads in this mode
+
+Reads are signed with OAuth 1.0a user context, like writes. Every read endpoint this server uses accepts user context; it needs no extra call to X's `oauth2/token` endpoint and no second, app-wide credential to cache; and it reads with exactly the credentials checked on `initialize`. Rate limits are per account anyway, since each account has its own app. Single-account mode still reads with `X_BEARER_TOKEN`.
+
+### One client and one state file per account
+
+- Each account gets its own X API client, kept while its sessions are open and dropped when the last one closes. Two sessions of the same account share it; different accounts never share a client, a state file or a budget.
+- Each account keeps its state in `<state dir>/accounts/<user id>.json`: its own budgets, dedup history, workflows and queue. The state directory is `X_MCP_STATE_DIR`, else the directory of `X_MCP_STATE_FILE`, else the working directory.
+- Budget limits, protected accounts, compact, dedup and TOON stay global settings, the same for every account. Protected usernames are resolved to user ids once, with the first verified account.
+- Single-account mode keeps its one state file (`X_MCP_STATE_FILE`, default `{cwd}/x-mcp-state.json`).
+
+### Client configuration
+
+Any MCP client that can send a header on a streamable HTTP connection works, for example:
+
+```json
+{
+  "mcpServers": {
+    "x-twitter": {
+      "type": "http",
+      "url": "http://x-mcp:8000/mcp",
+      "headers": { "X-Account": "<api_key>:<api_secret>:<access_token>:<access_token_secret>" }
+    }
+  }
+}
+```
+
+One connection per account. Pin the `account` argument to the handle the user approved, so the server refuses any call that would act for another account.
+
+For Kubernetes, see [the chart README](charts/README.md): `accounts.fromHeader` and an optional NetworkPolicy.
+
+---
+
 ## Connect to Your Client
 
 See **[Client Setup](docs/CLIENT-SETUP.md)** for configuration instructions for Claude Code, Claude Desktop, Cursor, OpenAI Codex, Windsurf, Cline, and other MCP clients.
@@ -457,6 +553,9 @@ Your Access Token was generated before you enabled write permissions. Go to the 
 
 ### 401 Unauthorized
 Double-check that all 5 credentials in your `.env` are correct and that there are no extra spaces or line breaks.
+
+### 401 in multi-account mode
+The `X-Account` header is missing, malformed, refused by X, or not the one the session was opened with. The error message says which, without repeating the header. Check that all four values are present, separated by `:`, with no spaces, and that the access token belongs to the app of the API key.
 
 ### 429 Rate Limited
 The error message includes exactly when the rate limit resets. Wait until then, or reduce request frequency.
